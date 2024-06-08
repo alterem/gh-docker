@@ -1,7 +1,8 @@
-'use strict';
-const HUB_HOST = 'registry-1.docker.io';
-const AUTH_URL = 'https://auth.docker.io';
-const WORKERS_URL = 'https://your.domain';
+'use strict'
+
+const HUB_HOST = 'registry-1.docker.io'
+const AUTH_URL = 'https://auth.docker.io'
+const WORKERS_URL = 'https://your.domain'
 /**
  * static files (404.html, sw.js, conf.js)
  */
