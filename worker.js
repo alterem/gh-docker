@@ -67,7 +67,7 @@ async function handleFetchEvent(event) {
  * @param {URL} url
  * @returns {Promise<Response>}
  */
-async function handleDockerProxy(request, url, env) {
+async function handleDockerProxy(request, url) {
     const headers = {
         'Host': url.pathname === '/token' ? 'auth.docker.io' : HUB_HOST,
         'User-Agent': request.headers.get('User-Agent'),
@@ -88,7 +88,7 @@ async function handleDockerProxy(request, url, env) {
     const responseHeaders = new Headers(response.headers);
     const status = response.status;
     if (responseHeaders.get('Www-Authenticate')) {
-        responseHeaders.set('Www-Authenticate', responseHeaders.get('Www-Authenticate').replace(new RegExp(AUTH_URL, 'g'), env.WORKERS_URL || WORKERS_URL));
+        responseHeaders.set('Www-Authenticate', responseHeaders.get('Www-Authenticate').replace(new RegExp(AUTH_URL, 'g'), WORKERS_URL));
     }
     if (responseHeaders.get('Location')) {
         return handleHttpRedirect(request, responseHeaders.get('Location'));
