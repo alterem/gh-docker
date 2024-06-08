@@ -1,149 +1,252 @@
-'use strict'
-const hub_host = 'registry-1.docker.io'
-const auth_url = 'https://auth.docker.io'
-const workers_url = 'https://your.domain'
-const ASSET_URL = 'https://hunshcn.github.io/gh-proxy/'
-const PREFIX = '/'
-const Config = {
-    jsdelivr: 0
-}
-const whiteList = [] 
+'use strict';
+
+const HUB_HOST = 'registry-1.docker.io';
+const AUTH_URL = 'https://auth.docker.io';
+const WORKERS_URL = 'https://your.domain';
+const ASSET_URL = 'https://hunshcn.github.io/gh-proxy/';
+const PREFIX = '/';
+const Config = { jsdelivr: 0 };
+const whiteList = [];
+
+const exp1 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:releases|archive)\/.*$/i;
+const exp2 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:blob|raw)\/.*$/i;
+const exp3 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:info|git-).*$/i;
+const exp4 = /^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+?\/.+$/i;
+const exp5 = /^(?:https?:\/\/)?gist\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+$/i;
+const exp6 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/tags.*$/i;
+
+/** @type {RequestInit} */
 const PREFLIGHT_INIT = {
+    // @ts-ignore
     status: 204,
     headers: new Headers({
         'access-control-allow-origin': '*',
-        'access-control-allow-methods': 'GET,POST,PUT,PATCH,TRACE,DELETE,HEAD,OPTIONS',
+        'access-control-allow-methods': 'GET, POST, PUT, PATCH, TRACE, DELETE, HEAD, OPTIONS',
         'access-control-max-age': '1728000',
     }),
-}
-const exp1 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:releases|archive)\/.*$/i
-const exp2 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:blob|raw)\/.*$/i
+};
+
 /**
+ * Create a new response.
  * @param {any} body
- * @param {number} status
+ * @param {number} [status=200]
  * @param {Object<string, string>} headers
+ * @returns {Response}
  */
-function makeRes(body, status = 200, headers = {}) {
-    headers['access-control-allow-origin'] = '*'
-    return new Response(body, {status, headers})
+function makeResponse(body, status = 200, headers = {}) {
+    headers['access-control-allow-origin'] = '*';
+    return new Response(body, { status, headers });
 }
+
 /**
+ * Create a new URL object.
  * @param {string} urlStr
+ * @returns {URL|null}
  */
-function newUrl(urlStr) {
+function createURL(urlStr) {
     try {
-        return new URL(urlStr)
+        return new URL(urlStr);
     } catch (err) {
-        return null
+        return null;
     }
 }
-addEventListener('fetch', e => {
-    const ret = fetchHandler(e)
-        .catch(err => makeRes('cfworker error:\n' + err.stack, 502))
-    e.respondWith(ret)
-})
+
+addEventListener('fetch', (event) => {
+    event.respondWith(handleFetchEvent(event).catch(err => makeResponse(`cfworker error:\n${err.stack}`, 502)));
+});
+
 /**
- * @param {FetchEvent} e
+ * Handle the fetch event.
+ * @param {FetchEvent} event
+ * @returns {Promise<Response>}
  */
-async function fetchHandler(e) {
-    const getReqHeader = (key) => e.request.headers.get(key);
-    let url = new URL(e.request.url);
-    if (url.pathname === '/token') {
-        let token_parameter = {
-            headers: {
-                'Host': 'auth.docker.io',
-                'User-Agent': getReqHeader("User-Agent"),
-                'Accept': getReqHeader("Accept"),
-                'Accept-Language': getReqHeader("Accept-Language"),
-                'Accept-Encoding': getReqHeader("Accept-Encoding"),
-                'Connection': 'keep-alive',
-                'Cache-Control': 'max-age=0'
-            }
-        };
-        let token_url = auth_url + url.pathname + url.search
-        return fetch(new Request(token_url, e.request), token_parameter)
+async function handleFetchEvent(event) {
+    const req = event.request;
+    const url = new URL(req.url);
+
+    if (url.pathname.startsWith('/token') || url.pathname.startsWith('/v2')) {
+        return handleDockerProxy(req, url);
     }
-    url.hostname = hub_host;
-    let parameter = {
-        headers: {
-            'Host': hub_host,
-            'User-Agent': getReqHeader("User-Agent"),
-            'Accept': getReqHeader("Accept"),
-            'Accept-Language': getReqHeader("Accept-Language"),
-            'Accept-Encoding': getReqHeader("Accept-Encoding"),
+
+    if (url.pathname.startsWith(PREFIX)) {
+        return handleGitHubProxy(req, url);
+    }
+
+    return makeResponse('Not Found', 404);
+}
+
+/**
+ * Handle token requests and Docker proxy.
+ * @param {Request} req
+ * @param {URL} url
+ * @returns {Promise<Response>}
+ */
+async function handleDockerProxy(req, url) {
+    if (url.pathname === '/token') {
+        const tokenURL = AUTH_URL + url.pathname + url.search;
+        const headers = new Headers({
+            'Host': 'auth.docker.io',
+            'User-Agent': req.headers.get('User-Agent'),
+            'Accept': req.headers.get('Accept'),
+            'Accept-Language': req.headers.get('Accept-Language'),
+            'Accept-Encoding': req.headers.get('Accept-Encoding'),
             'Connection': 'keep-alive',
             'Cache-Control': 'max-age=0'
-        },
-        cacheTtl: 3600
-    };
-    if (e.request.headers.has("Authorization")) {
-        parameter.headers.Authorization = getReqHeader("Authorization");
+        });
+        return fetch(new Request(tokenURL, req), { headers });
     }
-    let original_response = await fetch(new Request(url, e.request), parameter)
-    let response_headers = original_response.headers;
-    let new_response_headers = new Headers(response_headers);
-    let status = original_response.status;
-    if (new_response_headers.get("Www-Authenticate")) {
-        let auth = new_response_headers.get("Www-Authenticate");
-        let re = new RegExp(auth_url, 'g');
-        new_response_headers.set("Www-Authenticate", response_headers.get("Www-Authenticate").replace(re, workers_url));
-    }
-    if (new_response_headers.get("Location")) {
-        return httpHandler(e.request, new_response_headers.get("Location"))
-    }
-    return new Response(original_response.body, {
-        status,
-        headers: new_response_headers
+
+    url.hostname = HUB_HOST;
+    const headers = new Headers({
+        'Host': HUB_HOST,
+        'User-Agent': req.headers.get('User-Agent'),
+        'Accept': req.headers.get('Accept'),
+        'Accept-Language': req.headers.get('Accept-Language'),
+        'Accept-Encoding': req.headers.get('Accept-Encoding'),
+        'Connection': 'keep-alive',
+        'Cache-Control': 'max-age=0'
     });
+
+    if (req.headers.has('Authorization')) {
+        headers.set('Authorization', req.headers.get('Authorization'));
+    }
+
+    const response = await fetch(new Request(url, req), { headers });
+    const responseHeaders = new Headers(response.headers);
+    const status = response.status;
+
+    if (responseHeaders.get('Www-Authenticate')) {
+        const authHeader = responseHeaders.get('Www-Authenticate');
+        const re = new RegExp(AUTH_URL, 'g');
+        responseHeaders.set('Www-Authenticate', authHeader.replace(re, WORKERS_URL));
+    }
+
+    if (responseHeaders.get('Location')) {
+        return handleHttpRedirect(req, responseHeaders.get('Location'));
+    }
+
+    responseHeaders.set('access-control-expose-headers', '*');
+    responseHeaders.set('access-control-allow-origin', '*');
+    responseHeaders.set('Cache-Control', 'max-age=1500');
+    responseHeaders.delete('Content-Security-Policy');
+    responseHeaders.delete('Content-Security-Policy-Report-Only');
+    responseHeaders.delete('Clear-Site-Data');
+
+    return new Response(response.body, { status, headers: responseHeaders });
 }
+
 /**
+ * Handle GitHub proxy requests.
+ * @param {Request} req
+ * @param {URL} url
+ * @returns {Promise<Response>}
+ */
+async function handleGitHubProxy(req, url) {
+    let path = url.searchParams.get('q');
+    if (path) {
+        return Response.redirect('https://' + url.host + PREFIX + path, 301);
+    }
+    path = url.href.substr(url.origin.length + PREFIX.length).replace(/^https?:\/+/, 'https://');
+    if (checkUrl(path)) {
+        return httpHandler(req, path);
+    } else if (path.search(exp2) === 0) {
+        if (Config.jsdelivr) {
+            const newUrl = path.replace('/blob/', '@').replace(/^(?:https?:\/\/)?github\.com/, 'https://cdn.jsdelivr.net/gh');
+            return Response.redirect(newUrl, 302);
+        } else {
+            path = path.replace('/blob/', '/raw/');
+            return httpHandler(req, path);
+        }
+    } else if (path.search(exp4) === 0) {
+        const newUrl = path.replace(/(?<=com\/.+?\/.+?)\/(.+?\/)/, '@$1').replace(/^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com/, 'https://cdn.jsdelivr.net/gh');
+        return Response.redirect(newUrl, 302);
+    } else {
+        return fetch(ASSET_URL + path);
+    }
+}
+
+/**
+ * Check if the URL matches GitHub patterns.
+ * @param {string} url
+ * @returns {boolean}
+ */
+function checkUrl(url) {
+    return [exp1, exp2, exp3, exp4, exp5, exp6].some(exp => url.search(exp) === 0);
+}
+
+/**
+ * Handle HTTP redirects.
+ * @param {Request} req
+ * @param {string} location
+ * @returns {Promise<Response>}
+ */
+async function handleHttpRedirect(req, location) {
+    const url = createURL(location);
+    if (!url) {
+        return makeResponse('Invalid URL', 400);
+    }
+    return proxyRequest(url, req);
+}
+
+/**
+ * Handle HTTP requests.
  * @param {Request} req
  * @param {string} pathname
+ * @returns {Promise<Response>}
  */
-function httpHandler(req, pathname) {
-    const reqHdrRaw = req.headers
-    if (req.method === 'OPTIONS' && reqHdrRaw.has('access-control-request-headers')) {
-        return new Response(null, PREFLIGHT_INIT)
+async function httpHandler(req, pathname) {
+    if (req.method === 'OPTIONS' && req.headers.has('access-control-request-headers')) {
+        return new Response(null, PREFLIGHT_INIT);
     }
-    let rawLen = ''
-    const reqHdrNew = new Headers(reqHdrRaw)
-    let urlStr = pathname
-    const urlObj = newUrl(urlStr)
-    const reqInit = {
-        method: req.method,
-        headers: reqHdrNew,
-        redirect: 'follow',
-        body: req.body
-    }
-    return proxy(urlObj, reqInit, rawLen)
-}
-/**
- * @param {URL} urlObj
- * @param {RequestInit} reqInit
- */
-async function proxy(urlObj, reqInit, rawLen) {
-    const res = await fetch(urlObj.href, reqInit)
-    const resHdrOld = res.headers
-    const resHdrNew = new Headers(resHdrOld)
-    if (rawLen) {
-        const newLen = resHdrOld.get('content-length') || ''
-        if (rawLen !== newLen) {
-            return makeRes(res.body, 400, {
-                '--error': `bad len: ${newLen}, except: ${rawLen}`,
-                'access-control-expose-headers': '--error',
-            })
+
+    const headers = new Headers(req.headers);
+    let flag = !whiteList.length;
+    for (const i of whiteList) {
+        if (pathname.includes(i)) {
+            flag = true;
+            break;
         }
     }
-    const status = res.status
-    resHdrNew.set('access-control-expose-headers', '*')
-    resHdrNew.set('access-control-allow-origin', '*')
-    resHdrNew.set('Cache-Control', 'max-age=1500')
-    
-    resHdrNew.delete('content-security-policy')
-    resHdrNew.delete('content-security-policy-report-only')
-    resHdrNew.delete('clear-site-data')
-    return new Response(res.body, {
-        status,
-        headers: resHdrNew
-    })
+    if (!flag) {
+        return new Response('blocked', { status: 403 });
+    }
+
+    if (pathname.search(/^https?:\/\//) !== 0) {
+        pathname = 'https://' + pathname;
+    }
+
+    const url = createURL(pathname);
+    return proxyRequest(url, { method: req.method, headers, body: req.body });
+}
+
+/**
+ * Proxy a request.
+ * @param {URL} url
+ * @param {RequestInit} reqInit
+ * @returns {Promise<Response>}
+ */
+async function proxyRequest(url, reqInit) {
+    const response = await fetch(url.href, reqInit);
+    const responseHeaders = new Headers(response.headers);
+
+    if (responseHeaders.has('location')) {
+        const location = responseHeaders.get('location');
+        if (checkUrl(location)) {
+            responseHeaders.set('location', PREFIX + location);
+        } else {
+            reqInit.redirect = 'follow';
+            return proxyRequest(createURL(location), reqInit);
+        }
+    }
+
+    responseHeaders.set('access-control-expose-headers', '*');
+    responseHeaders.set('access-control-allow-origin', '*');
+    responseHeaders.delete('content-security-policy');
+    responseHeaders.delete('content-security-policy-report-only');
+    responseHeaders.delete('clear-site-data');
+
+    return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+    });
 }
